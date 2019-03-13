@@ -1,6 +1,6 @@
 #  Description
 
-与实验室常用相机进行UDP通信的简单demo
+与实验室常用相机进行UDP通信的简单demo（收发两线程，可用于多台相机同时工作）
 
 #  Environmet
  
