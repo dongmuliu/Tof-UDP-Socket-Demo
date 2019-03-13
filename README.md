@@ -1,6 +1,6 @@
 #  Description
 
-与实验室常用相机进行TCP通信的简单demo
+与实验室常用相机进行UDP通信的简单demo
 
 #  Environmet
  
