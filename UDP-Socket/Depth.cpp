@@ -7,20 +7,21 @@
 #include<direct.h>
 #include"TinySocket.h"
 #include <io.h>
+#include <conio.h>
 
 using namespace std;
 using namespace cv;
 
 //参数设置
-#define   Img_width   (320)
-#define   Img_height  (240)
-#define	 MYPORT		(8978)
-#define MAX_NUM_PIX	 82656	//328 * 252
-#define LOW_AMPLITUDE 	32500
-#define MAX_PHASE      30000.0
-#define MAX_DIST_VALUE 	30000
-#define maxdepth 10000
-#define mindepth  1000
+#define   Img_width			(320)
+#define   Img_height		(240)
+#define	  MYPORT			(8978)	//本地端口
+#define   MAX_NUM_PIX		82656	//328 * 252
+#define	  LOW_AMPLITUDE 	32500	//强度过低时像素值
+#define   MAX_PHASE			30000.0	//温度矫正用
+#define   MAX_DIST_VALUE 	30000	//温度矫正用
+#define   maxdepth			10000	//最大深度，用于显示
+#define	  mindepth			1000	//最小深度，用于显示
 //相机内参
 #define   FX  286.6034
 #define   FY  287.3857	
@@ -29,43 +30,34 @@ using namespace cv;
 //相机畸变
 #define   K1  -0.12346
 #define   K2  0.159423
-string g_temprequire = { "getTemperature" };   //向相机发送温度指令
-string g_strquery = { "getDistanceSorted" };   //向相机发送距离指令
-string _ip = { "192.168.7.63" };              //相机的Ip地址
-string save_dir = { "H:\\save\\" };                          //保存路径
-int _port = 50660;                          //相机的端口号
+//是否保存图片
+#define   SAVE_IMAGE		0
+
+string _ip = { "192.168.7.63" };				//相机的Ip地址
+int _port = 50660;								//相机的端口号
+string g_temprequire = { "getTemperature" };	//向相机发送温度指令
+string g_strquery = { "getDistanceSorted" };	//向相机发送距离指令
+string save_dir = { "H:\\save\\" };				//保存路径
+
 
 
 int		drnuLut[50][252][328];
-static	int		g_Exit = 0;
-int				g_enableshtter = 1;
-int             packetnum = 0;
-int				g_TempReadEnable;
-int		offsetPhase;
-int		orgOffsetLSB=0;
-int		gOffsetDRNU_Temp=0;
-int		gTempCal_Temp=0;
-int		offsetPhaseDefault=0;
-int	 g_TempReadDelay = 0;
-int	_status = 0;  //0 空闲状态，1= 数据更新  2 数据处理中
-int _grayoffset = 0;
-int k = 0;
-int	_ch;
-uint64	_saveimgid;
-double	gStepCalMM = 0;
-_TCHAR	g_myexepath[MAX_PATH];
-char dir_time[50];			//用于按时间保存
+static	int		g_Exit = 0;				//线程结束通知
+int				g_enableshtter = 1;		//快门关闭通知
+int             packetnum = 0;			//接收包数量
+int				_status = 0;			//0 空闲状态，1= 数据更新  2 数据处理中
+char dir_time[50];						//用于按时间保存
 
-ushort	realTempChip;
+ushort	realTempChip;		//温度
 ushort	realTempBoard1;
 ushort	realTempBoard2;
-unsigned short	*	_depthdata = new unsigned short[Img_width*Img_height];
-cv::Mat _matimg;
-cv::Mat save_src(Img_height, Img_width, CV_16UC1, Scalar(0));
-uint16_t depth[Img_height][Img_width];
+unsigned short	*	_depthdata = new unsigned short[Img_width*Img_height];	//深度数据缓存区
+
 CTinySocket		g_myRecvUdp(1, MYPORT); //connect to camera - need bind
 CTinySocket		g_mySendUdp; //connect to server- not neet bind
+
 //显示相机温度
+//输入：buf 温度数据指针（16位）
 void setrealtemperature(char *buf)
 {
 	int i;
@@ -73,24 +65,22 @@ void setrealtemperature(char *buf)
 	for (i = 0; i < 4; i++){
 		temp += (uchar)*(buf + i * 2) + (ushort)(*(buf + i * 2 + 1)) * 256;
 	}
+	//温度转换
 	realTempChip = temp / 4;
 	realTempBoard1 = (uchar)*(buf + 8) + (ushort)(*(buf + 9)) * 256;
 	realTempBoard2 = (uchar)*(buf + 10) + (ushort)(*(buf + 11)) * 256;
 
 	printf("Temperature Read = %d, %d, %d\n", realTempChip, realTempBoard1, realTempBoard2);
 }
-int saveTemperature(char * buf)
-{
-	setrealtemperature(buf);
-	return 0;
-}
+
 
 // 发送指令线程
 void thread_Requestdcam()  
 {
-
+	int	 g_TempReadDelay = 0;	//获取温度计时
 	double t1, t2;
 	t1 = t2 = 0;
+	int g_TempReadEnable;		//获取温度标示
 	while (!g_Exit)
 	{
 		t1 = (double)cv::getTickCount();
@@ -99,29 +89,27 @@ void thread_Requestdcam()
 		int n = 0;
 		if (1 == g_enableshtter || delays > 0.5)
 		{
-			
-			  packetnum = 0;
+			//接收包计数清零
+			packetnum = 0;
 			
 			if (1 == g_TempReadEnable)
 			{
-				
-				// read temperature from previous cam
+				// 采集温度
 				n = g_myRecvUdp.Sendto((char*)_ip.c_str(), _port, (char*)g_temprequire.c_str(), g_temprequire.size());
 				g_TempReadEnable = 0;
 			}
 			else
 			{
+				// 采集深度
 				n = g_myRecvUdp.Sendto((char*)_ip.c_str(), _port, (char*)g_strquery.c_str(), g_strquery.size());
 				g_TempReadDelay++;
 			}
+
 			if (n <= 0)
 			{
 				printf("--------------------Send fail---------------------");
 			}
-			else
-			{
-				//LOGI("send request to " << nid + 1 << "***" << g_strquery);
-			}
+
 			g_enableshtter = 0;
 
 			//读取深度五十次后，读取温度
@@ -154,24 +142,23 @@ void thread_RecvSocketDcam()
 			if (n == 15)
 			{
 				buf[n] = 0;
+				//如果获取到快门关闭，快门标志置位
 				if (strcmp(buf, "shutterclosed  ") == 0)
 				{
 					g_enableshtter = 1;
-					//tempersendflag = 1;
 				}
 			}
 			else if (n == 12) //temperature
 			{
-
+				//获取到温度信息
 				g_enableshtter = 1;
-				saveTemperature(buf);
+				setrealtemperature(buf);
 		
 			}
 			else if (51202 == n && buf[0] <= 3 && buf[1] == 'x')
 			{
 				if (_status != 2)
 				{
-							
 					packetnum++;
 					//printf("--------------------packnum=%d\n", packetnum);
 					memcpy((char*)_depthdata + 51200 * ((int)buf[0] - 1), buf + 2, 51200);
@@ -189,25 +176,32 @@ void thread_RecvSocketDcam()
 }
 
 //保存数据
-Mat saveprocess()
+//输入：data 图像数据
+//输入：k 保存编号
+//输出：Mat格式深度图像
+Mat saveprocess(unsigned short* data,int k)
 {
-	
+	Mat save_src(Img_height, Img_width, CV_16UC1, Scalar(0));
 	for (int i = 0; i < Img_height; i++)
 	{
 		for (int j = 0; j < Img_width; j++)
 		{
 			//_depthdata保存了320*240数据
 			
-			save_src.at<ushort>(i, j) = _depthdata[j + i * Img_width];
+			save_src.at<ushort>(i, j) = data[j + i * Img_width];
 
 		}
 	}
-	string img_Name = save_dir + to_string(k) + ".png";
-	k++;
-	imwrite(img_Name, save_src);
+	if (SAVE_IMAGE)
+	{
+		string img_Name = save_dir + to_string(k) + ".png";
+		imwrite(img_Name, save_src);
+	}
+	
 	return save_src.clone();
 }
 //显示图像
+//输入：src1 显示的图片信息（ushort)
 void showprocess(Mat src1)
 {
 	Mat showsrc(Img_height, Img_width, CV_8UC1, Scalar(0));
@@ -224,22 +218,18 @@ void showprocess(Mat src1)
 				src1.at<ushort>(i, j) = maxdepth;
 			}
 			showsrc.at<uchar>(i, j) = 255 - (src1.at<ushort>(i, j) -mindepth)*255 / (maxdepth-mindepth);
-			//showsrc.at<uchar>(i, j) = src1.at<ushort>(i, j) * 25 / 3000;
-			//cout << src2.at<uchar>(i, j) << endl;
 		}
-
 	}
-
-
 	imshow("showsrc", showsrc);
 	waitKey(1);
 }
+
 //八均值滤波
+//输入： 深度图像指针
 void imageAverageEightConnectivity(ushort *depthdata) {
 	int pixelCounter;
 	int nCols = 320;
 	int nRowsPerHalf = 120;
-	//int size = nCols * nRowsPerHalf * 2;
 	int size = 320 * 240;
 	ushort actualFrame[MAX_NUM_PIX];
 	int i, j, index;
@@ -290,7 +280,7 @@ void imageAverageEightConnectivity(ushort *depthdata) {
 				pixdata += actualFrame[index - 319];
 				pixelCounter++;
 			}
-
+			//如果周围有效数据小于6记为无效点
 			if (pixelCounter < 6) {
 				*(depthdata + index) = LOW_AMPLITUDE;
 			}
@@ -299,14 +289,16 @@ void imageAverageEightConnectivity(ushort *depthdata) {
 			}
 		}
 	}
-	//
-	//end part
 }
+
 //温度校正
 int calculationCorrectDRNU(ushort * img){
+	int		gTempCal_Temp = 0;
+	double	gStepCalMM = 0;
+
 	int i, x, y, l;
 	double dist, tempDiff = 0;
-	int offset = gOffsetDRNU_Temp;
+	int offset = 0;
 	//printf("gOffsetDRNU = %d\n", offset);  //w
 	uint16_t maxDistanceMM = 150000000 / 12000;
 	double stepLSB = gStepCalMM * MAX_PHASE / maxDistanceMM;
@@ -345,7 +337,8 @@ int calculationCorrectDRNU(ushort * img){
 }
 //偏移补偿
 void calculationAddOffset(ushort *img){
-	int offset = 0;
+	int		offsetPhaseDefault = 0;
+	int		offset = 0;
 	uint16_t maxDistanceCM = 0;
 	int l = 0;
 	//offsetPhase = MAX_PHASE / (gSpeedOfLightDiv2 / configGetModulationFrequency(deviceAddress) / 10) * value;	
@@ -362,16 +355,22 @@ void calculationAddOffset(ushort *img){
 		}
 	}
 }
+
+//滤波补偿
+//输入：img 图像信息的指针
 void  calibrate(ushort *img)
 {
+	//均值滤波
 	imageAverageEightConnectivity(img);
-	offsetPhase = orgOffsetLSB;
+	//温度矫正
 	calculationCorrectDRNU(img);
+	//深度补偿
 	calculationAddOffset(img);
 }
+
 //畸变矫正
-//输入： 待矫正的图片
-//输出： 校正后的图片
+//输入：src 待矫正的图片
+//输出：校正后的图片
 Mat undistimg(Mat src)
 {
 
@@ -412,29 +411,38 @@ Mat undistimg(Mat src)
 	cv::remap(src, img, map1, map2, INTER_LINEAR);																	//畸变矫正
 	return img.clone();
 }
+
+
 int main()
 {
+	int k = 0;		//保存文件编号
 	time_t t = time(0);
 	strftime(dir_time, sizeof(dir_time), "%H%M%S", localtime(&t));
 	//start socket
 	sk_startup();
+	//初始化
 	memset(_depthdata, 0, Img_width*Img_height*sizeof(unsigned short));
+	//启动接收、发送线程
 	std::thread th_recv(thread_RecvSocketDcam);
 	std::thread th_query(thread_Requestdcam);
 	th_recv.detach();
 	th_query.detach();
-	while (true)
+
+	while (!_kbhit())
 	{
-		if (_status == 1)
+		if (_status == 1)		//_status=1，接收数据完成
 		{
-			_status = 2;
+			_status = 2;		//开始处理数据
 			if (packetnum >= 3)
 			{
+				//滤波矫正
 				calibrate(_depthdata);
-				Mat src_1= saveprocess();
+
+				Mat src_1= saveprocess(_depthdata,k++);
 				Mat src_2 = undistimg(src_1);
 				showprocess(src_2);
 			}
+			//状态更新
 			packetnum = 0;
 			_status = 0;
 		}
